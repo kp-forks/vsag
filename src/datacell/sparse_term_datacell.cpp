@@ -15,6 +15,9 @@
 
 #include "sparse_term_datacell.h"
 
+#include <cstring>
+
+#include "simd/fp16_simd.h"
 #include "utils/util_functions.h"
 #include "vsag/allocator.h"
 #include "vsag_exception.h"
@@ -40,15 +43,15 @@ SparseTermDataCell::Query(float* global_dists, const SparseTermComputerPtr& comp
         auto term_size = static_cast<uint32_t>(static_cast<float>(term_sizes_[term]) *
                                                computer->term_retain_ratio_);
 
-        if (use_quantization_) {
+        if (sparse_value_quant_type_ == SparseValueQuantizationType::SQ8) {
             computer->ScanForAccumulate(
                 it, term_ids_[term]->data(), term_datas_[term]->data(), term_size, global_dists);
+        } else if (sparse_value_quant_type_ == SparseValueQuantizationType::FP16) {
+            computer->ScanForAccumulateFP16Bytes(
+                it, term_ids_[term]->data(), term_datas_[term]->data(), term_size, global_dists);
         } else {
-            computer->ScanForAccumulate(it,
-                                        term_ids_[term]->data(),
-                                        reinterpret_cast<const float*>(term_datas_[term]->data()),
-                                        term_size,
-                                        global_dists);
+            computer->ScanForAccumulateFloatBytes(
+                it, term_ids_[term]->data(), term_datas_[term]->data(), term_size, global_dists);
         }
     }
     computer->ResetTerm();
@@ -263,14 +266,19 @@ SparseTermDataCell::InsertVector(const SparseVector& sparse_base, uint16_t base_
         term_ids_[term]->push_back(base_id);
 
         auto& data_vec = *term_datas_[term];
-        if (use_quantization_) {
+        if (sparse_value_quant_type_ == SparseValueQuantizationType::SQ8) {
             uint8_t buffer;
             Encode(val, &buffer);
             data_vec.push_back(buffer);
+        } else if (sparse_value_quant_type_ == SparseValueQuantizationType::FP16) {
+            auto old_size = data_vec.size();
+            data_vec.resize(old_size + sizeof(uint16_t));
+            auto fp16_value = generic::FloatToFP16(val);
+            std::memcpy(data_vec.data() + old_size, &fp16_value, sizeof(fp16_value));
         } else {
             auto old_size = data_vec.size();
             data_vec.resize(old_size + sizeof(float));
-            *reinterpret_cast<float*>(data_vec.data() + old_size) = val;
+            std::memcpy(data_vec.data() + old_size, &val, sizeof(val));
         }
 
         term_sizes_[term] += 1;
@@ -325,19 +333,27 @@ SparseTermDataCell::CalcDistanceByInnerId(const SparseTermComputerPtr& computer,
             continue;
         }
 
-        // Dequantize
-        const float* vals = nullptr;
         auto size = term_sizes_[term];
-        if (use_quantization_) {
+        if (sparse_value_quant_type_ == SparseValueQuantizationType::SQ8) {
             temp_data.resize(size);
             Decode(term_datas_[term]->data(), size, temp_data.data());
-            vals = temp_data.data();
+            computer->ScanForCalculateDist(
+                it, term_ids_[term]->data(), temp_data.data(), term_sizes_[term], base_id, &ip);
+        } else if (sparse_value_quant_type_ == SparseValueQuantizationType::FP16) {
+            computer->ScanForCalculateDistFP16Bytes(it,
+                                                    term_ids_[term]->data(),
+                                                    term_datas_[term]->data(),
+                                                    term_sizes_[term],
+                                                    base_id,
+                                                    &ip);
         } else {
-            vals = reinterpret_cast<const float*>(term_datas_[term]->data());
+            computer->ScanForCalculateDistFloatBytes(it,
+                                                     term_ids_[term]->data(),
+                                                     term_datas_[term]->data(),
+                                                     term_sizes_[term],
+                                                     base_id,
+                                                     &ip);
         }
-
-        computer->ScanForCalculateDist(
-            it, term_ids_[term]->data(), vals, term_sizes_[term], base_id, &ip);
     }
     computer->ResetTerm();
     return 1 + ip;
@@ -381,10 +397,19 @@ SparseTermDataCell::GetSparseVector(uint32_t base_id,
             if (one_term_ids[i] == base_id) {
                 ids.push_back(term);
                 float v;
-                if (use_quantization_) {
+                if (sparse_value_quant_type_ == SparseValueQuantizationType::SQ8) {
                     Decode(term_datas_[term]->data() + i, 1, &v);
+                } else if (sparse_value_quant_type_ == SparseValueQuantizationType::FP16) {
+                    uint16_t fp16_value = 0;
+                    std::memcpy(
+                        &fp16_value,
+                        term_datas_[term]->data() + static_cast<uint64_t>(i) * sizeof(fp16_value),
+                        sizeof(fp16_value));
+                    v = generic::FP16ToFloat(fp16_value);
                 } else {
-                    v = reinterpret_cast<float*>(term_datas_[term]->data())[i];
+                    std::memcpy(&v,
+                                term_datas_[term]->data() + static_cast<uint64_t>(i) * sizeof(v),
+                                sizeof(v));
                 }
                 vals.push_back(v);
             }
@@ -453,8 +478,10 @@ SparseTermDataCell::Deserialize(StreamReader& reader) {
             std::memcpy(
                 term_datas_[i]->data(), data_buffer.data(), sizeof(float) * data_buffer.size());
             convert(ids_buffer, *term_ids_[i]);
-            if (use_quantization_) {
+            if (sparse_value_quant_type_ == SparseValueQuantizationType::SQ8) {
                 term_datas_[i]->resize(term_ids_[i]->size());
+            } else if (sparse_value_quant_type_ == SparseValueQuantizationType::FP16) {
+                term_datas_[i]->resize(term_ids_[i]->size() * sizeof(uint16_t));
             }
         }
     }
