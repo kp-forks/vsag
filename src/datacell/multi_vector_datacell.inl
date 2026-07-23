@@ -230,15 +230,13 @@ MultiVectorDataCell<QuantTmpl, IOTmpl>::Query(float* result_dists,
     std::vector<uint64_t> data_sizes(id_count);
     uint64_t total_size = 0;
     for (InnerIdType i = 0; i < id_count; ++i) {
-        data_sizes[i] = sizeof(uint32_t) +
-                        static_cast<uint64_t>(lens[i]) * multi_vector_dim_ * sizeof(float);
+        data_sizes[i] =
+            sizeof(uint32_t) + static_cast<uint64_t>(lens[i]) * multi_vector_dim_ * sizeof(float);
         total_size += data_sizes[i];
     }
     ByteBuffer all_codes(total_size, this->allocator_);
-    if (!this->io_->MultiRead(all_codes.data,
-                              data_sizes.data(),
-                              offsets.data(),
-                              static_cast<uint64_t>(id_count))) {
+    if (!this->io_->MultiRead(
+            all_codes.data, data_sizes.data(), offsets.data(), static_cast<uint64_t>(id_count))) {
         throw VsagException(ErrorType::READ_ERROR,
                             "MultiVectorDataCell: failed to read token data");
     }
