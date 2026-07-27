@@ -87,9 +87,11 @@ collect_heap_results(const DistHeapPtr& results, Allocator* allocator) {
 FlattenInterfacePtr
 create_rerank_flat(const IndexCommonParam& common_param,
                    const std::string& rerank_type,
-                   uint32_t term_id_limit) {
+                   uint32_t term_id_limit,
+                   uint32_t dmq_shared_codebook_threshold) {
     if (rerank_type == SPARSE_RERANK_TYPE_DMQ8) {
-        return std::make_shared<SparseDmqDataCell>(term_id_limit, common_param);
+        return std::make_shared<SparseDmqDataCell>(
+            term_id_limit, common_param, dmq_shared_codebook_threshold);
     }
     auto rerank_param = std::make_shared<SparseVectorDataCellParameter>();
     rerank_param->io_parameter = std::make_shared<MemoryBlockIOParameter>();
@@ -190,6 +192,7 @@ SINDI::SINDI(const SINDIParameterPtr& param, const IndexCommonParam& common_para
       use_reorder_(param->use_reorder),
       sparse_value_quant_type_(param->sparse_value_quant_type),
       rerank_type_(param->rerank_type),
+      dmq_shared_codebook_threshold_(param->dmq_shared_codebook_threshold),
       term_id_limit_(param->term_id_limit),
       window_size_(param->window_size),
       doc_prune_ratio_(param->doc_prune_ratio),
@@ -208,7 +211,8 @@ SINDI::SINDI(const SINDIParameterPtr& param, const IndexCommonParam& common_para
     if (use_reorder_) {
         uint32_t rerank_term_id_limit =
             remap_term_ids_ ? std::numeric_limits<uint32_t>::max() : term_id_limit_;
-        rerank_flat_ = create_rerank_flat(common_param, rerank_type_, rerank_term_id_limit);
+        rerank_flat_ = create_rerank_flat(
+            common_param, rerank_type_, rerank_term_id_limit, param->dmq_shared_codebook_threshold);
     }
 }
 
@@ -1828,15 +1832,23 @@ SINDI::EstimateMemory(uint64_t num_elements) const {
     if (use_reorder_) {
         uint64_t total_sparse_values = static_cast<uint64_t>(avg_doc_term_length_) * num_elements;
         if (rerank_type_ == SPARSE_RERANK_TYPE_DMQ8) {
-            uint32_t rerank_id_bits =
-                remap_term_ids_ ? 32 : get_bits_for_term_id_limit(term_id_limit_);
+            const uint64_t estimated_term_count =
+                std::min<uint64_t>(term_id_limit_, total_sparse_values);
+            const uint32_t rerank_id_bits = get_bits_for_term_id_limit(
+                estimated_term_count == 0 ? 0 : static_cast<uint32_t>(estimated_term_count - 1));
             mem += (total_sparse_values * rerank_id_bits + 7) / 8;
             mem += total_sparse_values;
             mem += num_elements * (sizeof(uint64_t) + sizeof(SparseDmqQuantizer::EncodedHeader));
-            uint64_t estimated_codebook_count =
-                std::min<uint64_t>(term_id_limit_, total_sparse_values);
+            uint64_t estimated_codebook_count = estimated_term_count;
+            if (dmq_shared_codebook_threshold_ != 0 && total_sparse_values != 0) {
+                const uint64_t minimum_dedicated_term_frequency =
+                    static_cast<uint64_t>(dmq_shared_codebook_threshold_) + 1;
+                estimated_codebook_count =
+                    std::min(estimated_term_count,
+                             total_sparse_values / minimum_dedicated_term_frequency + 1);
+            }
             mem += estimated_codebook_count * sizeof(SparseDmqQuantizer::Codebook);
-            mem += estimated_codebook_count * sizeof(uint32_t);
+            mem += estimated_term_count * 2 * sizeof(uint32_t);
         } else {
             mem += num_elements *
                    (sizeof(uint32_t) + avg_doc_term_length_ * (sizeof(uint32_t) + sizeof(float)));
