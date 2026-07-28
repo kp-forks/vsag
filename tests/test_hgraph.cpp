@@ -3675,7 +3675,7 @@ TEST_CASE("HGraph Concurrent Tune and CalDistanceById", "[ft][concurrent][hgraph
     for (int i = 0; i < 4; ++i) {
         readers.emplace_back([&]() {
             while (!stop.load(std::memory_order_relaxed)) {
-                index.value()->CalDistanceById(query.data(), batch_ids.data(), 3);
+                (void)index.value()->CalcDistancesById(query.data(), batch_ids.data(), 3);
                 cal_count.fetch_add(1, std::memory_order_relaxed);
             }
         });
@@ -3840,7 +3840,7 @@ TEST_CASE("HGraph Concurrent Tune(disable_future_tuning=false) and CalDistanceBy
     for (int i = 0; i < 4; ++i) {
         readers.emplace_back([&]() {
             while (!stop.load(std::memory_order_relaxed)) {
-                index.value()->CalDistanceById(query.data(), batch_ids.data(), 3);
+                (void)index.value()->CalcDistancesById(query.data(), batch_ids.data(), 3);
                 cal_count.fetch_add(1, std::memory_order_relaxed);
             }
         });
