@@ -92,6 +92,18 @@ public:
     InsertVector(const SparseVector& sparse_base, uint16_t base_id);
 
     void
+    SortByValue();
+
+    static void
+    SortPostingListByValue(uint16_t* ids,
+                           uint8_t* data,
+                           uint32_t posting_count,
+                           SparseValueQuantizationType quantization_type,
+                           Vector<uint32_t>& order,
+                           Vector<uint16_t>& sorted_ids,
+                           Vector<uint8_t>& sorted_data);
+
+    void
     ResizeTermList(InnerIdType new_term_capacity);
 
     void
@@ -101,7 +113,7 @@ public:
     Serialize(StreamWriter& writer) const;
 
     void
-    Deserialize(StreamReader& reader);
+    Deserialize(StreamReader& reader, bool postings_sorted = false);
 
     float
     CalcDistanceByInnerId(const SparseTermComputerPtr& computer, uint16_t base_id);
@@ -111,6 +123,9 @@ public:
 
     void
     Decode(const uint8_t* src, size_t size, float* dst) const;
+
+    static uint32_t
+    GetSparseValueCodeSize(SparseValueQuantizationType type);
 
     void
     GetSparseVector(uint32_t base_id, SparseVector* data, Allocator* specified_allocator);

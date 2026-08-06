@@ -116,6 +116,9 @@ TEST_CASE_PERSISTENT_FIXTURE(fixtures::SINDITestIndex,
     SECTION("invalid doc_prune_ratio") {
         fixtures::SINDIParam param;
         param.doc_prune_ratio = 0.99;
+        REQUIRE_NOTHROW(
+            TestFactory("sindi", fixtures::SINDITestIndex::GenerateBuildParameter(param), true));
+        param.doc_prune_ratio = 1.0;
         REQUIRE_THROWS(
             TestFactory("sindi", fixtures::SINDITestIndex::GenerateBuildParameter(param), false));
         param.doc_prune_ratio = -0.1;
@@ -151,7 +154,7 @@ TEST_CASE_PERSISTENT_FIXTURE(fixtures::SINDITestIndex,
         invalid_search_param = R"({
             "sindi":{
                 "n_candidate": 10,
-                "query_prune_ratio": 1.2,
+                "query_prune_ratio": 1.0,
                 "term_prune_ratio": 0.0
             }
         })";
