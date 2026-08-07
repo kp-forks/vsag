@@ -79,7 +79,9 @@ auto result = index->KnnSearch(
 
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `base_quantization_type` | string | — | 底层量化类型（`fp32`、`fp16`、`bf16`、`sq8`、`sq4`、`sq8_uniform`、`sq4_uniform`、`pq`、`pqfs`、`rabitq`）。各量化器细节见[量化章节](../quantization/README.md)。 |
+| `base_quantization_type` | string | — | 底层量化类型（`fp32`、`fp16`、`bf16`、`sq8`、`sq4`、`sq8_uniform`、`sq4_uniform`、`pq`、`pqfs`、`rabitq`、`tq`）。各量化器细节见[量化章节](../quantization/README.md)。 |
+| `tq_chain` | string | — | `base_quantization_type` 为 `tq` 时使用的变换链，例如 `"mrle, rabitq"`。 |
+| `mrle_dim` | int | `0` | MRLE 保留的前缀维度；`0` 表示保持输入维度。 |
 | `max_degree` | int | `64` | 子图内节点的最大出度 |
 | `graph_type` | string | `"nsw"` | `nsw` 或 `odescent` |
 | `ef_construction` | int | `400` | `nsw` 构图时的候选集大小 |
@@ -113,6 +115,32 @@ auto result = index->KnnSearch(
     "rabitq_bits_per_dim_precise": 5
 }
 ```
+
+由于 split code 无法解码回输入向量，Pyramid 还会保留一份内部 FP32 副本，用于增量
+FLAT→GRAPH 晋升和 Analyzer 采样。检索距离仍使用 split code；该副本会额外占用
+`count * dim * sizeof(float)` 字节的向量存储。
+
+### MRLE 与 split RaBitQ
+
+对于使用 Matryoshka Representation Learning 训练的向量，Pyramid 可以先截断维度，再编码
+为 split RaBitQ：
+
+```json
+{
+    "base_quantization_type": "tq",
+    "tq_chain": "mrle, rabitq",
+    "mrle_dim": 1280,
+    "precise_quantization_type": "rabitq",
+    "rabitq_bits_per_dim_base": 3,
+    "rabitq_bits_per_dim_precise": 5,
+    "use_reorder": true
+}
+```
+
+该配置使用 3-bit filter planes 构图和搜索、5-bit supplement planes 精排；两部分编码的是
+同一个截断后向量。Pyramid 从 split base datacell 精排，并保留原始 FP32 向量供构图提升和
+统计使用。原始向量副本会占用额外空间；如果 embedding 模型没有针对前缀维度训练，截断
+可能显著降低召回率。
 
 ## 检索参数
 

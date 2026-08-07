@@ -476,6 +476,8 @@ TEST_CASE("Pyramid maps RaBitQ x+y split params", "[ut][PyramidParameters]") {
     REQUIRE(typed_param->use_reorder);
     REQUIRE(typed_param->reorder_source == std::string("base"));
     REQUIRE(typed_param->precise_codes_param == nullptr);
+    REQUIRE(typed_param->store_raw_vector);
+    REQUIRE(typed_param->raw_vector_param != nullptr);
     const auto base_json = typed_param->base_codes_param->ToJson();
     REQUIRE(base_json["codes_type"].GetString() == std::string("rabitq_split"));
     REQUIRE(base_json["io_params"]["type"].GetString() == std::string("block_memory_io"));
@@ -490,6 +492,60 @@ TEST_CASE("Pyramid maps RaBitQ x+y split params", "[ut][PyramidParameters]") {
     REQUIRE(base_json["quantization_params"]["rabitq_version"].GetString() == std::string("split"));
     REQUIRE(base_json["quantization_params"]["rabitq_bits_per_dim_base"].GetInt() == 8);
     REQUIRE(base_json["quantization_params"]["rabitq_bits_per_dim_filter"].GetInt() == 3);
+}
+
+TEST_CASE("Pyramid maps MRLE RaBitQ split to base reorder", "[ut][PyramidParameters][MRLE]") {
+    auto param = vsag::JsonType::Parse(R"({
+        "base_quantization_type": "tq",
+        "tq_chain": "mrle, rabitq",
+        "mrle_dim": 64,
+        "precise_quantization_type": "rabitq",
+        "rabitq_bits_per_dim_base": 3,
+        "rabitq_bits_per_dim_precise": 5,
+        "hierarchies": ["site"],
+        "use_reorder": true
+    })");
+
+    vsag::IndexCommonParam common_param;
+    common_param.dim_ = 128;
+    common_param.data_type_ = vsag::DataTypes::DATA_TYPE_FLOAT;
+    auto mapped = vsag::Pyramid::CheckAndMappingExternalParam(param, common_param);
+    auto typed_param = std::dynamic_pointer_cast<vsag::PyramidParameters>(mapped);
+
+    REQUIRE(typed_param != nullptr);
+    REQUIRE(typed_param->reorder_source == std::string("base"));
+    REQUIRE(typed_param->precise_codes_param == nullptr);
+    REQUIRE(typed_param->store_raw_vector);
+    REQUIRE(typed_param->raw_vector_param != nullptr);
+    const auto base_json = typed_param->base_codes_param->ToJson();
+    const auto raw_json = typed_param->raw_vector_param->ToJson();
+    REQUIRE(base_json["codes_type"].GetString() == std::string("rabitq_split"));
+    REQUIRE(base_json["quantization_params"]["type"].GetString() == std::string("tq"));
+    REQUIRE(base_json["quantization_params"]["tq_chain"].GetString() == std::string("mrle,rabitq"));
+    REQUIRE(base_json["quantization_params"]["mrle_dim"].GetInt() == 64);
+    REQUIRE(base_json["quantization_params"]["rabitq_bits_per_dim_filter"].GetInt() == 3);
+    REQUIRE(base_json["quantization_params"]["rabitq_bits_per_dim_base"].GetInt() == 8);
+    REQUIRE(raw_json["quantization_params"]["type"].GetString() == std::string("fp32"));
+}
+
+TEST_CASE("Pyramid retains vectors for TQ without precise decode source",
+          "[ut][PyramidParameters][TQ]") {
+    auto param = vsag::JsonType::Parse(R"({
+        "base_quantization_type": "tq",
+        "tq_chain": "mrle, fp32",
+        "mrle_dim": 64,
+        "use_reorder": false
+    })");
+
+    vsag::IndexCommonParam common_param;
+    common_param.dim_ = 128;
+    common_param.data_type_ = vsag::DataTypes::DATA_TYPE_FLOAT;
+    auto mapped = vsag::Pyramid::CheckAndMappingExternalParam(param, common_param);
+    auto typed_param = std::dynamic_pointer_cast<vsag::PyramidParameters>(mapped);
+
+    REQUIRE(typed_param != nullptr);
+    REQUIRE(typed_param->store_raw_vector);
+    REQUIRE(typed_param->raw_vector_param != nullptr);
 }
 
 TEST_CASE("Pyramid rejects invalid RaBitQ split params", "[ut][PyramidParameters]") {

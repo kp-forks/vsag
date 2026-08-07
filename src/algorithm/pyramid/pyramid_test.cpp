@@ -15,6 +15,8 @@
 
 #include "pyramid.h"
 
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <numeric>
 #include <vector>
@@ -36,7 +38,9 @@ PyramidTestIndex
 MakePyramidIndex(uint32_t index_min_size,
                  uint64_t build_thread_count = 1,
                  bool use_rabitq_with_sq8 = false,
-                 bool split_rabitq = false) {
+                 bool split_rabitq = false,
+                 bool use_mrle_split = false,
+                 bool use_mrle_fp32 = false) {
     PyramidTestIndex result;
     vsag::IndexCommonParam common_param;
     common_param.dim_ = PYRAMID_TEST_DIM;
@@ -61,6 +65,24 @@ MakePyramidIndex(uint32_t index_min_size,
         external_param[vsag::PYRAMID_RABITQ_BITS_PER_DIM_BASE].SetInt(3);
         external_param[vsag::PYRAMID_RABITQ_BITS_PER_DIM_PRECISE].SetInt(5);
         external_param[vsag::PYRAMID_USE_REORDER].SetBool(true);
+    }
+    if (use_mrle_split) {
+        external_param[vsag::PYRAMID_BASE_QUANTIZATION_TYPE].SetString(
+            vsag::QUANTIZATION_TYPE_VALUE_TQ);
+        external_param[vsag::PYRAMID_PRECISE_QUANTIZATION_TYPE].SetString(
+            vsag::QUANTIZATION_TYPE_VALUE_RABITQ);
+        external_param[vsag::PYRAMID_USE_REORDER].SetBool(true);
+        external_param[vsag::INDEX_TQ_CHAIN].SetString("mrle, rabitq");
+        external_param[vsag::INDEX_MRLE_DIM].SetInt(2);
+        external_param[vsag::PYRAMID_RABITQ_BITS_PER_DIM_BASE].SetInt(3);
+        external_param[vsag::PYRAMID_RABITQ_BITS_PER_DIM_PRECISE].SetInt(5);
+    }
+    if (use_mrle_fp32) {
+        external_param[vsag::PYRAMID_BASE_QUANTIZATION_TYPE].SetString(
+            vsag::QUANTIZATION_TYPE_VALUE_TQ);
+        external_param[vsag::PYRAMID_USE_REORDER].SetBool(false);
+        external_param[vsag::INDEX_TQ_CHAIN].SetString("mrle, fp32");
+        external_param[vsag::INDEX_MRLE_DIM].SetInt(2);
     }
     external_param[vsag::PYRAMID_INDEX_MIN_SIZE].SetInt(index_min_size);
     external_param[vsag::PYRAMID_BUILD_THREAD_COUNT].SetUint64(build_thread_count);
@@ -219,6 +241,74 @@ TEST_CASE("Pyramid promotes flat node at index minimum size", "[ut][pyramid]") {
             REQUIRE(stats.size() == 1);
             REQUIRE(std::stoul(stats[0]) > 0);
         }
+    }
+}
+
+TEST_CASE("Pyramid MRLE split retains vectors for flat node promotion", "[ut][pyramid][MRLE]") {
+    auto test_index = MakePyramidIndex(3, 4, false, false, true);
+    const auto& index = test_index.index;
+    std::vector<float> vectors = {
+        0.0F,
+        0.0F,
+        0.0F,
+        0.0F,
+        1.0F,
+        0.0F,
+        0.0F,
+        0.0F,
+        0.0F,
+        1.0F,
+        0.0F,
+        0.0F,
+    };
+    std::vector<int64_t> ids = {100, 101, 102};
+    std::vector<std::string> paths(3, "tenant");
+
+    REQUIRE(index->Add(MakePyramidDataset(vectors.data(), ids.data(), paths.data(), 2)).empty());
+    REQUIRE(index
+                ->Add(MakePyramidDataset(
+                    vectors.data() + 2 * PYRAMID_TEST_DIM, ids.data() + 2, paths.data() + 2, 1))
+                .empty());
+
+    REQUIRE(GetPyramidSubindexCount(index, "graph_subindexes") == 1);
+    for (int64_t i = 0; i < 3; ++i) {
+        std::array<float, PYRAMID_TEST_DIM> decoded{};
+        index->GetVectorByInnerId(i, decoded.data());
+        REQUIRE(std::equal(decoded.begin(), decoded.end(), vectors.begin() + i * PYRAMID_TEST_DIM));
+    }
+}
+
+TEST_CASE("Pyramid TQ retains vectors without precise decode source", "[ut][pyramid][TQ]") {
+    auto test_index = MakePyramidIndex(3, 1, false, false, false, true);
+    const auto& index = test_index.index;
+    std::vector<float> vectors = {
+        0.0F,
+        0.0F,
+        0.0F,
+        0.0F,
+        1.0F,
+        0.0F,
+        0.0F,
+        0.0F,
+        0.0F,
+        1.0F,
+        0.0F,
+        0.0F,
+    };
+    std::vector<int64_t> ids = {100, 101, 102};
+    std::vector<std::string> paths(3, "tenant");
+
+    REQUIRE(index->Add(MakePyramidDataset(vectors.data(), ids.data(), paths.data(), 2)).empty());
+    REQUIRE(index
+                ->Add(MakePyramidDataset(
+                    vectors.data() + 2 * PYRAMID_TEST_DIM, ids.data() + 2, paths.data() + 2, 1))
+                .empty());
+
+    REQUIRE(GetPyramidSubindexCount(index, "graph_subindexes") == 1);
+    for (int64_t i = 0; i < 3; ++i) {
+        std::array<float, PYRAMID_TEST_DIM> decoded{};
+        index->GetVectorByInnerId(i, decoded.data());
+        REQUIRE(std::equal(decoded.begin(), decoded.end(), vectors.begin() + i * PYRAMID_TEST_DIM));
     }
 }
 

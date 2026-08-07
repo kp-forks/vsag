@@ -38,6 +38,7 @@
 #include "io/memory_io/memory_io.h"
 #include "io/memory_io/memory_io_parameter.h"
 #include "io/mmap_io/mmap_io_parameter.h"
+#include "quantization/bottom_quantizer_accessor.h"
 #include "quantization/rabitq_quantization/rabitq_quantizer.h"
 #include "query_context.h"
 #include "storage/stream_reader.h"
@@ -140,9 +141,19 @@ private:
     uint64_t code_size_{0};
 };
 
-template <MetricType metric, typename OneBitIOTmpl, typename SupplementIOTmpl = OneBitIOTmpl>
+template <MetricType metric,
+          typename OneBitIOTmpl,
+          typename SupplementIOTmpl = OneBitIOTmpl,
+          typename QuantizerT = RaBitQuantizer<metric>>
 class RaBitQSplitDataCell : public FlattenInterface, public FlattenOptimizedBuildInterface {
 public:
+    using Accessor = BottomQuantizerAccessor<QuantizerT>;
+    using BottomQuantizer = typename Accessor::BottomQuantizerType;
+    using BottomComputer = typename Accessor::BottomComputerType;
+
+    static_assert(std::is_same_v<BottomQuantizer, RaBitQuantizer<metric>>,
+                  "RaBitQSplitDataCell requires RaBitQuantizer as bottom quantizer");
+
     class OptimizedBuildComputer final : public ComputerInterface {
     public:
         OptimizedBuildComputer(uint64_t record_size, Allocator* allocator)
@@ -166,9 +177,8 @@ public:
                                  const IOParamPtr& supplement_io_param,
                                  const IndexCommonParam& common_param)
         : common_param_(common_param), allocator_(common_param.allocator_.get()) {
-        this->quantizer_ =
-            std::make_shared<RaBitQuantizer<metric>>(quantization_param, common_param);
-        if (not this->quantizer_->SupportSplitCodeStorage()) {
+        this->quantizer_ = std::make_shared<QuantizerT>(quantization_param, common_param);
+        if (not this->bottom_quantizer().SupportSplitCodeStorage()) {
             throw VsagException(ErrorType::INVALID_ARGUMENT,
                                 "rabitq split data cell requires rabitq_version=split, "
                                 "rabitq_bits_per_dim_query=32, and "
@@ -204,7 +214,7 @@ public:
             this->query_optimized_build_codes(result_dists, computer, idx, id_count);
             return;
         }
-        auto* comp = static_cast<Computer<RaBitQuantizer<metric>>*>(computer.get());
+        auto* comp = this->get_bottom_computer(computer);
         if constexpr (not OneBitIOTmpl::InMemory or not SupplementIOTmpl::InMemory) {
             if (id_count > 1) {
                 if constexpr (OneBitIOTmpl::InMemory and not SupplementIOTmpl::InMemory) {
@@ -240,7 +250,7 @@ public:
             this->query_optimized_build_codes(result_dists, computer, idx, id_count);
             return;
         }
-        auto* comp = static_cast<Computer<RaBitQuantizer<metric>>*>(computer.get());
+        auto* comp = this->get_bottom_computer(computer);
         if constexpr (not OneBitIOTmpl::InMemory or not SupplementIOTmpl::InMemory) {
             if (id_count > 1) {
                 if constexpr (OneBitIOTmpl::InMemory and not SupplementIOTmpl::InMemory) {
@@ -279,7 +289,7 @@ public:
             this->query_optimized_build_codes(result_dists, computer, idx, id_count);
             return;
         }
-        auto* comp = static_cast<Computer<RaBitQuantizer<metric>>*>(computer.get());
+        auto* comp = this->get_bottom_computer(computer);
         for (uint32_t i = 0; i < this->prefetch_stride_code_ and i < id_count; ++i) {
             this->prefetch_full_code(idx[i]);
         }
@@ -295,7 +305,7 @@ public:
             float lower_bound = std::numeric_limits<float>::max();
             bool computed = false;
             try {
-                computed = this->quantizer_->ComputeDistWithOneBitLowerBound(
+                computed = this->bottom_quantizer().ComputeDistWithOneBitLowerBound(
                     *comp,
                     one_bit_code,
                     &one_bit_dist,
@@ -341,7 +351,7 @@ public:
             }
             return;
         }
-        auto* comp = static_cast<Computer<RaBitQuantizer<metric>>*>(computer.get());
+        auto* comp = this->get_bottom_computer(computer);
         this->add_filter_count(ctx, id_count);
         if constexpr (not OneBitIOTmpl::InMemory) {
             if (id_count > 1) {
@@ -385,7 +395,7 @@ public:
                 auto* lower_bound2 = lower_bounds == nullptr ? nullptr : lower_bounds + i + 1;
                 auto* lower_bound3 = lower_bounds == nullptr ? nullptr : lower_bounds + i + 2;
                 auto* lower_bound4 = lower_bounds == nullptr ? nullptr : lower_bounds + i + 3;
-                this->quantizer_->ComputeDistsWithOneBitLowerBoundBatch4(
+                this->bottom_quantizer().ComputeDistsWithOneBitLowerBoundBatch4(
                     *comp,
                     code1,
                     code2,
@@ -441,7 +451,7 @@ public:
             auto* lower_bound = lower_bounds == nullptr ? nullptr : lower_bounds + i;
             bool computed = false;
             try {
-                computed = this->quantizer_->ComputeDistWithOneBitLowerBound(
+                computed = this->bottom_quantizer().ComputeDistWithOneBitLowerBound(
                     *comp,
                     one_bit_code,
                     result_dists + i,
@@ -491,13 +501,14 @@ public:
 
     bool
     BeginOptimizedBuild(const FlattenOptimizedBuildContext& context) override {
-        if (this->optimized_build_active_ or not this->quantizer_->SupportScalarCodeBuild()) {
+        if (this->optimized_build_active_ or
+            not this->bottom_quantizer().SupportScalarCodeBuild()) {
             return false;
         }
         auto io_param = std::make_shared<MemoryIOParameter>();
         auto build_codes =
             std::make_shared<RaBitQSplitCodeStorage<MemoryIO>>(io_param, this->common_param_);
-        build_codes->SetCodeSize(this->quantizer_->GetScalarCodeSize());
+        build_codes->SetCodeSize(this->bottom_quantizer().GetScalarCodeSize());
         auto code_sums = std::make_unique<Vector<uint64_t>>(this->allocator_);
         if (this->max_capacity_ > 0) {
             build_codes->Resize(this->max_capacity_);
@@ -505,7 +516,7 @@ public:
         }
         this->optimized_build_scalar_codes_ = build_codes;
         this->optimized_build_code_sums_ = std::move(code_sums);
-        this->optimized_build_record_size_ = this->quantizer_->GetScalarCodeSize();
+        this->optimized_build_record_size_ = this->bottom_quantizer().GetScalarCodeSize();
         this->optimized_build_context_ = context;
         this->optimized_build_active_ = true;
         return true;
@@ -536,7 +547,7 @@ public:
                                         "failed to read temporary scalar RaBitQ build code");
                 }
                 try {
-                    this->quantizer_->PackScalarCodeToSplitCode(
+                    this->bottom_quantizer().PackScalarCodeToSplitCode(
                         scalar_code, one_bit_code.data, supplement_code.data);
                     this->x_bit_cell_->Write(one_bit_code.data, id);
                     this->supplement_cell_->Write(supplement_code.data, id);
@@ -682,7 +693,7 @@ public:
             }
             float distance = 0.0F;
             try {
-                distance = this->quantizer_->ComputeScalarCodesDistance(
+                distance = this->bottom_quantizer().ComputeScalarCodesDistance(
                     codes1,
                     (*optimized_build_code_sums_)[id1],
                     codes2,
@@ -741,9 +752,8 @@ public:
         this->quantizer_->Serialize(writer);
         ss.seekg(0, std::ios::beg);
         IOStreamReader reader(ss);
-        auto ptr =
-            std::dynamic_pointer_cast<RaBitQSplitDataCell<metric, OneBitIOTmpl, SupplementIOTmpl>>(
-                other);
+        auto ptr = std::dynamic_pointer_cast<
+            RaBitQSplitDataCell<metric, OneBitIOTmpl, SupplementIOTmpl, QuantizerT>>(other);
         if (ptr == nullptr) {
             throw VsagException(ErrorType::INTERNAL_ERROR,
                                 "Export model's rabitq split datacell failed");
@@ -840,7 +850,8 @@ public:
             if (scalar_code == nullptr) {
                 return false;
             }
-            this->quantizer_->PackScalarCode(scalar_code, codes);
+            memset(codes, 0, this->code_size_);
+            this->bottom_quantizer().PackScalarCode(scalar_code, codes);
             if (need_release) {
                 this->optimized_build_scalar_codes_->Release(scalar_code);
             }
@@ -853,7 +864,8 @@ public:
         if (not one_bit_ok or not supplement_ok) {
             return false;
         }
-        this->quantizer_->MergeSplitCode(one_bit.data, supplement.data, codes);
+        memset(codes, 0, this->code_size_);
+        this->bottom_quantizer().MergeSplitCode(one_bit.data, supplement.data, codes);
         return true;
     }
 
@@ -890,9 +902,8 @@ public:
 
     void
     MergeOther(const FlattenInterfacePtr& other, InnerIdType bias) override {
-        auto ptr =
-            std::dynamic_pointer_cast<RaBitQSplitDataCell<metric, OneBitIOTmpl, SupplementIOTmpl>>(
-                other);
+        auto ptr = std::dynamic_pointer_cast<
+            RaBitQSplitDataCell<metric, OneBitIOTmpl, SupplementIOTmpl, QuantizerT>>(other);
         if (ptr == nullptr) {
             throw VsagException(ErrorType::INTERNAL_ERROR,
                                 "Merge rabitq split datacell failed: not match type");
@@ -941,7 +952,8 @@ public:
 
     uint64_t
     GetMemoryUsage() const override {
-        uint64_t memory = sizeof(RaBitQSplitDataCell<metric, OneBitIOTmpl, SupplementIOTmpl>);
+        uint64_t memory =
+            sizeof(RaBitQSplitDataCell<metric, OneBitIOTmpl, SupplementIOTmpl, QuantizerT>);
         memory += this->x_bit_cell_->GetMemoryUsage();
         memory += this->supplement_cell_->GetMemoryUsage();
         if (this->optimized_build_scalar_codes_ != nullptr) {
@@ -950,13 +962,13 @@ public:
         if (this->optimized_build_code_sums_ != nullptr) {
             memory += this->optimized_build_code_sums_->capacity() * sizeof(uint64_t);
         }
-        memory += sizeof(RaBitQuantizer<metric>);
+        memory += sizeof(QuantizerT);
         return memory;
     }
 
 public:
     IndexCommonParam common_param_;
-    std::shared_ptr<RaBitQuantizer<metric>> quantizer_{nullptr};
+    std::shared_ptr<QuantizerT> quantizer_{nullptr};
     std::shared_ptr<RaBitQSplitCodeStorage<OneBitIOTmpl>> x_bit_cell_{nullptr};
     std::shared_ptr<RaBitQSplitCodeStorage<SupplementIOTmpl>> supplement_cell_{nullptr};
     std::shared_ptr<RaBitQSplitCodeStorage<MemoryIO>> optimized_build_scalar_codes_{nullptr};
@@ -979,6 +991,22 @@ public:
     uint64_t optimized_build_record_size_{0};
 
 private:
+    BottomQuantizer&
+    bottom_quantizer() {
+        return Accessor::GetQuantizer(*this->quantizer_);
+    }
+
+    const BottomQuantizer&
+    bottom_quantizer() const {
+        return Accessor::GetQuantizer(*this->quantizer_);
+    }
+
+    BottomComputer*
+    get_bottom_computer(const ComputerInterfacePtr& computer) const {
+        auto* outer_computer = static_cast<Computer<QuantizerT>*>(computer.get());
+        return &Accessor::GetComputer(*outer_computer);
+    }
+
     static IOParamPtr
     SuffixIOParam(const IOParamPtr& io_param, const std::string& suffix, bool split_cache = false) {
         if (io_param == nullptr) {
@@ -1058,8 +1086,8 @@ private:
     void
     refresh_code_sizes() {
         this->code_size_ = static_cast<uint32_t>(quantizer_->GetCodeSize());
-        this->one_bit_code_size_ = quantizer_->GetOneBitCodeSize();
-        this->supplement_code_size_ = quantizer_->GetSupplementCodeSize();
+        this->one_bit_code_size_ = this->bottom_quantizer().GetOneBitCodeSize();
+        this->supplement_code_size_ = this->bottom_quantizer().GetSupplementCodeSize();
         this->x_bit_cell_->SetCodeSize(one_bit_code_size_);
         this->supplement_cell_->SetCodeSize(supplement_code_size_);
     }
@@ -1068,8 +1096,12 @@ private:
     write_encoded_vector(const float* vector, InnerIdType idx) {
         if (this->optimized_build_active_) {
             ByteBuffer scalar_code(this->optimized_build_record_size_, allocator_);
+            Vector<float> transformed_input(this->allocator_);
+            const float* bottom_input =
+                Accessor::PrepareBottomInput(*this->quantizer_, vector, transformed_input);
             uint64_t code_sum = 0;
-            if (not this->quantizer_->EncodeOneToScalarCode(vector, scalar_code.data, code_sum)) {
+            if (not this->bottom_quantizer().EncodeOneToScalarCode(
+                    bottom_input, scalar_code.data, code_sum)) {
                 throw VsagException(ErrorType::INTERNAL_ERROR,
                                     "failed to encode temporary scalar RaBitQ build code");
             }
@@ -1081,7 +1113,7 @@ private:
         this->quantizer_->EncodeOne(vector, full_code.data);
         ByteBuffer one_bit_code(one_bit_code_size_, allocator_);
         ByteBuffer supplement_code(supplement_code_size_, allocator_);
-        this->quantizer_->SplitCode(full_code.data, one_bit_code.data, supplement_code.data);
+        this->bottom_quantizer().SplitCode(full_code.data, one_bit_code.data, supplement_code.data);
         this->x_bit_cell_->Write(one_bit_code.data, idx);
         this->supplement_cell_->Write(supplement_code.data, idx);
     }
@@ -1101,7 +1133,7 @@ private:
                                                    id_count);
             return;
         }
-        auto* comp = static_cast<Computer<RaBitQuantizer<metric>>*>(computer.get());
+        auto* comp = this->get_bottom_computer(computer);
         for (InnerIdType i = 0; i < id_count; ++i) {
             bool need_release = false;
             const auto* scalar_code =
@@ -1111,7 +1143,8 @@ private:
                                     "failed to read temporary scalar RaBitQ build code");
             }
             try {
-                this->quantizer_->ComputeDistWithScalarCode(*comp, scalar_code, result_dists + i);
+                this->bottom_quantizer().ComputeDistWithScalarCode(
+                    *comp, scalar_code, result_dists + i);
             } catch (...) {
                 if (need_release) {
                     this->optimized_build_scalar_codes_->Release(scalar_code);
@@ -1145,7 +1178,7 @@ private:
                                     "failed to read temporary scalar RaBitQ build code");
             }
             try {
-                result_dists[i] = this->quantizer_->ComputeScalarCodesDistance(
+                result_dists[i] = this->bottom_quantizer().ComputeScalarCodesDistance(
                     query_code, query_sum, base_code, (*this->optimized_build_code_sums_)[idx[i]]);
             } catch (...) {
                 if (need_release) {
@@ -1247,7 +1280,7 @@ private:
     void
     query_one_bit_lower_bound_by_multiread(float* result_dists,
                                            float* lower_bounds,
-                                           Computer<RaBitQuantizer<metric>>* computer,
+                                           BottomComputer* computer,
                                            const InnerIdType* idx,
                                            InnerIdType id_count,
                                            QueryContext* ctx) const {
@@ -1282,7 +1315,7 @@ private:
             auto* lower_bound2 = lower_bounds == nullptr ? nullptr : lower_bounds + i + 1;
             auto* lower_bound3 = lower_bounds == nullptr ? nullptr : lower_bounds + i + 2;
             auto* lower_bound4 = lower_bounds == nullptr ? nullptr : lower_bounds + i + 3;
-            this->quantizer_->ComputeDistsWithOneBitLowerBoundBatch4(
+            this->bottom_quantizer().ComputeDistsWithOneBitLowerBoundBatch4(
                 *computer,
                 code1,
                 code2,
@@ -1326,7 +1359,7 @@ private:
         for (; i < id_count; ++i) {
             auto* lower_bound = lower_bounds == nullptr ? nullptr : lower_bounds + i;
             const auto* one_bit_code = one_bit_codes.data + i * one_bit_code_size_;
-            bool computed = this->quantizer_->ComputeDistWithOneBitLowerBound(
+            bool computed = this->bottom_quantizer().ComputeDistWithOneBitLowerBound(
                 *computer,
                 one_bit_code,
                 result_dists + i,
@@ -1342,7 +1375,7 @@ private:
 
     void
     query_full_dist_by_multiread(float* result_dists,
-                                 Computer<RaBitQuantizer<metric>>* computer,
+                                 BottomComputer* computer,
                                  const InnerIdType* idx,
                                  InnerIdType id_count,
                                  QueryContext* ctx,
@@ -1385,7 +1418,7 @@ private:
 
     void
     query_full_dist_by_supplement_multiread(float* result_dists,
-                                            Computer<RaBitQuantizer<metric>>* computer,
+                                            BottomComputer* computer,
                                             const InnerIdType* idx,
                                             InnerIdType id_count,
                                             QueryContext* ctx,
@@ -1430,7 +1463,7 @@ private:
     void
     compute_full_dist_after_one_bit_failure(InnerIdType id,
                                             const uint8_t* one_bit_code,
-                                            Computer<RaBitQuantizer<metric>>* computer,
+                                            BottomComputer* computer,
                                             float* result_dist,
                                             float* lower_bound,
                                             QueryContext* ctx) const {
@@ -1452,7 +1485,7 @@ private:
     void
     compute_full_dist(const uint8_t* one_bit_code,
                       const uint8_t* supplement_code,
-                      Computer<RaBitQuantizer<metric>>* computer,
+                      BottomComputer* computer,
                       float* result_dist,
                       QueryContext* ctx = nullptr,
                       float hint_dist = std::numeric_limits<float>::max()) const {
@@ -1461,7 +1494,7 @@ private:
         const bool has_hint =
             std::isfinite(hint_dist) and hint_dist < std::numeric_limits<float>::max();
         if (has_hint) {
-            computed = this->quantizer_->ComputeDistWithSplitCodeAndFilterDist(
+            computed = this->bottom_quantizer().ComputeDistWithSplitCodeAndFilterDist(
                 *computer, one_bit_code, supplement_code, hint_dist, result_dist);
         }
         if (computed) {
@@ -1469,17 +1502,17 @@ private:
         } else if (has_hint) {
             this->add_reorder_fallback_full_count(ctx, 1);
         }
-        if (not computed and not this->quantizer_->ComputeDistWithSplitCode(
+        if (not computed and not this->bottom_quantizer().ComputeDistWithSplitCode(
                                  *computer, one_bit_code, supplement_code, result_dist)) {
             ByteBuffer full_code(this->code_size_, allocator_);
-            this->quantizer_->MergeSplitCode(one_bit_code, supplement_code, full_code.data);
+            this->bottom_quantizer().MergeSplitCode(one_bit_code, supplement_code, full_code.data);
             computer->ComputeDist(full_code.data, result_dist);
         }
     }
 
     void
     compute_full_dist(InnerIdType id,
-                      Computer<RaBitQuantizer<metric>>* computer,
+                      BottomComputer* computer,
                       float* result_dist,
                       QueryContext* ctx = nullptr,
                       float hint_dist = std::numeric_limits<float>::max()) const {

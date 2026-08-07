@@ -84,7 +84,9 @@ Build-time parameters live under `index_param`.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `base_quantization_type` | string | — | Coarse storage quantizer (`fp32`, `fp16`, `bf16`, `sq8`, `sq4`, `sq8_uniform`, `sq4_uniform`, `pq`, `pqfs`, `rabitq`). See the [Quantization chapter](../quantization/README.md) for per-quantizer details. |
+| `base_quantization_type` | string | — | Coarse storage quantizer (`fp32`, `fp16`, `bf16`, `sq8`, `sq4`, `sq8_uniform`, `sq4_uniform`, `pq`, `pqfs`, `rabitq`, `tq`). See the [Quantization chapter](../quantization/README.md) for per-quantizer details. |
+| `tq_chain` | string | — | Transform chain used when `base_quantization_type` is `tq`, for example `"mrle, rabitq"`. |
+| `mrle_dim` | int | `0` | Prefix dimension retained by MRLE; `0` keeps the input dimension. |
 | `max_degree` | int | `64` | Maximum out-degree per node within a sub-graph. |
 | `graph_type` | string | `"nsw"` | `nsw` or `odescent`. |
 | `ef_construction` | int | `400` | Candidate list size for `nsw` builds. |
@@ -118,6 +120,33 @@ Set all five parameters together to enable RaBitQ x+y split storage and reorderi
     "rabitq_bits_per_dim_precise": 5
 }
 ```
+
+Because split codes cannot be decoded back to the input vector, Pyramid also retains an internal
+FP32 copy for incremental flat-to-graph promotion and analyzer sampling. Search distances still use
+the split codes; the FP32 copy adds `count * dim * sizeof(float)` bytes of vector storage.
+
+### MRLE with split RaBitQ
+
+Pyramid can truncate embeddings trained with Matryoshka Representation Learning before encoding
+them as split RaBitQ codes:
+
+```json
+{
+    "base_quantization_type": "tq",
+    "tq_chain": "mrle, rabitq",
+    "mrle_dim": 1280,
+    "precise_quantization_type": "rabitq",
+    "rabitq_bits_per_dim_base": 3,
+    "rabitq_bits_per_dim_precise": 5,
+    "use_reorder": true
+}
+```
+
+The 3-bit filter planes are used for graph traversal and the 5-bit supplement planes for
+reordering; both encode the same truncated vector. Pyramid reorders from the split base datacell
+and retains original FP32 vectors for graph promotion and statistics. The raw-vector copy adds
+storage, and truncation can reduce recall unless the embedding model was trained for prefix
+dimensions.
 
 ## Search parameters
 
