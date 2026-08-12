@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "impl/allocator/safe_allocator.h"
+#include "index/index_impl.h"
 #include "index_common_param.h"
 #include "unittest.h"
 
@@ -432,4 +433,56 @@ TEST_CASE("Pyramid reports statistics for flat and graph leaves", "[ut][pyramid]
     REQUIRE(graph_statistics["distance_evaluations_by_phase"]["approximate"].GetUint64() > 0);
     RequirePyramidSearchStatistics(
         graph_result, graph_statistics["distance_evaluations_by_phase"]["approximate"].GetUint64());
+}
+
+TEST_CASE("Pyramid exposes stored raw vectors", "[ut][pyramid][raw_vector]") {
+    constexpr int64_t count = 3;
+    const auto graph_type = GENERATE("nsw", "odescent");
+    std::array<float, count* PYRAMID_TEST_DIM> vectors = {
+        0.123456F,
+        0.234567F,
+        0.345678F,
+        0.456789F,
+        1.0F,
+        2.0F,
+        3.0F,
+        4.0F,
+        5.0F,
+        6.0F,
+        7.0F,
+        8.0F,
+    };
+    std::array<int64_t, count> ids = {10, 42, 1001};
+    std::array<std::string, count> paths = {"a", "b", "c"};
+
+    vsag::IndexCommonParam common_param;
+    common_param.dim_ = PYRAMID_TEST_DIM;
+    common_param.data_type_ = vsag::DataTypes::DATA_TYPE_FLOAT;
+    common_param.metric_ = vsag::MetricType::METRIC_TYPE_L2SQR;
+    common_param.allocator_ = vsag::SafeAllocator::FactoryDefaultAllocator();
+
+    auto external_param = vsag::JsonType::Parse(R"({
+        "base_quantization_type": "sq8",
+        "store_raw_vector": true,
+        "max_degree": 4,
+        "ef_construction": 8,
+        "no_build_levels": [0, 1]
+    })");
+    external_param[vsag::PYRAMID_GRAPH_TYPE].SetString(graph_type);
+    auto index = std::make_shared<vsag::IndexImpl<vsag::Pyramid>>(external_param, common_param);
+    auto dataset = MakePyramidDataset(
+        vectors.data(), ids.data(), paths.data(), static_cast<int64_t>(ids.size()));
+
+    REQUIRE(index->Build(dataset).has_value());
+    auto restored = index->GetRawVectorByIds(ids.data(), count, nullptr);
+    REQUIRE(restored.has_value());
+    REQUIRE(std::equal(vectors.begin(), vectors.end(), restored.value()->GetFloat32Vectors()));
+
+    auto distance = index->CalcDistanceById(vectors.data(), ids[0], true);
+    REQUIRE(distance.has_value());
+    REQUIRE(distance.value() == 0.0F);
+
+    auto distances = index->CalcDistancesById(vectors.data(), ids.data(), count, true);
+    REQUIRE(distances.has_value());
+    REQUIRE(distances.value()->GetDistances()[0] == 0.0F);
 }

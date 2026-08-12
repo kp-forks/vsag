@@ -226,7 +226,9 @@ Pyramid::build_by_odescent(const DatasetPtr& base) {
     const auto* data_ids = base->GetIds();
 
     resize(data_num);
-    std::memcpy(label_table_->label_table_.data(), data_ids, sizeof(LabelType) * data_num);
+    for (InnerIdType inner_id = 0; inner_id < data_num; ++inner_id) {
+        label_table_->Insert(inner_id, data_ids[inner_id]);
+    }
 
     base_codes_->BatchInsertVector(data_vectors, data_num);
     if (has_precise_reorder()) {
@@ -1088,6 +1090,9 @@ Pyramid::InitFeatures() {
         IndexFeature::SUPPORT_EXPORT_MODEL,
         IndexFeature::SUPPORT_GET_MEMORY_USAGE,
     });
+    if (has_raw_vector_) {
+        this->index_feature_list_->SetFeature(IndexFeature::SUPPORT_GET_RAW_VECTOR_BY_IDS);
+    }
 
     this->index_feature_list_->SetFeature(IndexFeature::SUPPORT_DELETE_BY_ID);
 }
@@ -1220,6 +1225,7 @@ Pyramid::CheckAndMappingExternalParam(const JsonType& external_param,
          {BASE_CODES_KEY, QUANTIZATION_PARAMS_KEY, PRODUCT_QUANTIZATION_DIM_KEY}},
         {PYRAMID_BASE_FILE_PATH, {BASE_CODES_KEY, IO_PARAMS_KEY, IO_FILE_PATH_KEY}},
         {PYRAMID_PRECISE_FILE_PATH, {PRECISE_CODES_KEY, IO_PARAMS_KEY, IO_FILE_PATH_KEY}},
+        {STORE_RAW_VECTOR, {STORE_RAW_VECTOR_KEY}},
         {ODESCENT_PARAMETER_BUILD_BLOCK_SIZE, {GRAPH_KEY, ODESCENT_PARAMETER_BUILD_BLOCK_SIZE}},
         {ODESCENT_PARAMETER_MIN_IN_DEGREE, {GRAPH_KEY, ODESCENT_PARAMETER_MIN_IN_DEGREE}},
         {ODESCENT_PARAMETER_GRAPH_ITER_TURN, {GRAPH_KEY, ODESCENT_PARAMETER_GRAPH_ITER_TURN}},
@@ -1636,6 +1642,9 @@ Pyramid::CalcDistanceById(const float* query, int64_t id, bool calculate_precise
     if (has_precise_reorder() && calculate_precise_distance) {
         flat = this->precise_codes_;
     }
+    if (raw_vector_ != nullptr && calculate_precise_distance) {
+        flat = this->raw_vector_;
+    }
     return InnerIndexInterface::calc_distance_by_id(query, id, flat);
 }
 
@@ -1657,6 +1666,9 @@ Pyramid::CalDistanceById(const float* query,
     auto flat = this->base_codes_;
     if (has_precise_reorder() && calculate_precise_distance) {
         flat = this->precise_codes_;
+    }
+    if (raw_vector_ != nullptr && calculate_precise_distance) {
+        flat = this->raw_vector_;
     }
     std::vector<bool> validity;
     auto result = InnerIndexInterface::cal_distance_by_id(query, ids, count, flat, &validity);

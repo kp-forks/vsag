@@ -176,6 +176,7 @@ public:
         if (pyramid_param->store_raw_vector) {
             raw_vector_ =
                 FlattenInterface::MakeInstance(pyramid_param->raw_vector_param, common_param);
+            has_raw_vector_ = true;
         }
     }
 
