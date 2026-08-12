@@ -59,6 +59,19 @@ public:
           QueryContext* ctx = nullptr) = 0;
 
     virtual void
+    QueryById(float* result_dists,
+              InnerIdType query_id,
+              const InnerIdType* idx,
+              InnerIdType id_count,
+              QueryContext* /*ctx*/ = nullptr) {
+        // This fallback performs one pairwise call per ID. Datacells with a batched or
+        // storage-aware implementation should override it.
+        for (InnerIdType i = 0; i < id_count; ++i) {
+            result_dists[i] = this->ComputePairVectors(query_id, idx[i]);
+        }
+    }
+
+    virtual void
     QueryWithDistanceFilter(float* result_dists,
                             const ComputerInterfacePtr& computer,
                             const InnerIdType* idx,

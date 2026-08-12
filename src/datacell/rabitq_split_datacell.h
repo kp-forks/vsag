@@ -244,6 +244,59 @@ public:
     }
 
     void
+    QueryById(float* result_dists,
+              InnerIdType query_id,
+              const InnerIdType* idx,
+              InnerIdType id_count,
+              QueryContext* ctx = nullptr) override {
+        if (not this->optimized_build_active_) {
+            // Persisted split storage has no temporary scalar codes. Merge the query once and
+            // reuse its full code; optimized builds use the scalar-code path below.
+            ByteBuffer query_code(this->code_size_, allocator_);
+            ByteBuffer base_code(this->code_size_, allocator_);
+            if (not this->GetCodesById(query_id, query_code.data)) {
+                throw VsagException(ErrorType::INTERNAL_ERROR,
+                                    "failed to read split RaBitQ query code");
+            }
+            for (InnerIdType i = 0; i < id_count; ++i) {
+                if (i + this->prefetch_stride_code_ < id_count) {
+                    this->prefetch_full_code(idx[i + this->prefetch_stride_code_]);
+                }
+                if (not this->GetCodesById(idx[i], base_code.data)) {
+                    throw VsagException(ErrorType::INTERNAL_ERROR,
+                                        "failed to read split RaBitQ base code");
+                }
+                result_dists[i] = this->bottom_quantizer().Compute(query_code.data, base_code.data);
+            }
+            this->add_distance_evaluations(ctx, id_count);
+            return;
+        }
+
+        bool need_release = false;
+        const auto* query_code = this->optimized_build_scalar_codes_->Read(query_id, need_release);
+        if (query_code == nullptr) {
+            throw VsagException(ErrorType::INTERNAL_ERROR,
+                                "failed to read temporary scalar RaBitQ query code");
+        }
+        try {
+            this->query_optimized_build_code_pairs(result_dists,
+                                                   query_code,
+                                                   (*this->optimized_build_code_sums_)[query_id],
+                                                   idx,
+                                                   id_count);
+        } catch (...) {
+            if (need_release) {
+                this->optimized_build_scalar_codes_->Release(query_code);
+            }
+            throw;
+        }
+        if (need_release) {
+            this->optimized_build_scalar_codes_->Release(query_code);
+        }
+        this->add_distance_evaluations(ctx, id_count);
+    }
+
+    void
     QueryWithDistanceHint(float* result_dists,
                           const float* hint_dists,
                           const ComputerInterfacePtr& computer,
@@ -732,7 +785,7 @@ public:
         ByteBuffer codes2(this->code_size_, allocator_);
         this->GetCodesById(id1, codes1.data);
         this->GetCodesById(id2, codes2.data);
-        return this->quantizer_->Compute(codes1.data, codes2.data);
+        return this->bottom_quantizer().Compute(codes1.data, codes2.data);
     }
 
     void
