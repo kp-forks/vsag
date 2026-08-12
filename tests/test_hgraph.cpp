@@ -1041,6 +1041,28 @@ TestHGraphWithAttr(const fixtures::HGraphTestIndexPtr& test_index,
 
 HGRAPH_PR_DAILY_CASE("HGraph With Attr", "[ft][filter_search][hgraph]", TestHGraphWithAttr)
 
+TEST_CASE("HGraph CalDistanceById default topk returns shaped result", "[ft][hgraph][pr]") {
+    using namespace fixtures;
+
+    HGraphTestIndex::HGraphBuildParam build_param("l2", 16, "fp32");
+    auto param = HGraphTestIndex::GenerateHGraphBuildParametersString(build_param);
+    auto index = TestIndex::TestFactory(HGraphTestIndex::name, param, true);
+    auto dataset = HGraphTestIndex::pool.GetDatasetAndCreate(16, 256, "l2");
+    TestIndex::TestBuildIndex(index, dataset, true);
+
+    const auto count = dataset->top_k;
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+    auto result = index->CalDistanceById(
+        dataset->query_->GetFloat32Vectors(), dataset->ground_truth_->GetIds(), count, true, -1);
+#pragma GCC diagnostic pop
+
+    REQUIRE(result.has_value());
+    REQUIRE(result.value()->GetDistances() != nullptr);
+    REQUIRE(result.value()->GetNumElements() == 1);
+    REQUIRE(result.value()->GetDim() == count);
+}
+
 TEST_CASE("(PR) HGraph SearchWithRequest Reasoning", "[ft][hgraph][pr]") {
     using namespace fixtures;
 
