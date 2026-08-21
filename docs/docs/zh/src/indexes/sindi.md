@@ -4,8 +4,8 @@
 
 SINDI（**S**parse **IN**verted **D**ense **I**ndex）是 VSAG 面向 **稀疏向量** 的索引——
 例如 BM25、SPLADE 以及其他学习稀疏（learned sparse）编码器产出的向量。与稠密索引
-（HGraph、IVF）不同，SINDI 直接在“词项-权重”对上工作，是 VSAG 中唯一接受
-`dtype: "sparse"` 的索引。
+（HGraph、IVF）不同，SINDI 直接在“词项-权重”对上工作，是 VSAG 中接受
+`dtype: "sparse"` 的索引之一。
 
 - 源码：`src/algorithm/sindi/`
 - 示例：[`examples/cpp/109_index_sindi.cpp`](https://github.com/antgroup/vsag/blob/main/examples/cpp/109_index_sindi.cpp)
@@ -22,6 +22,8 @@ SINDI（**S**parse **IN**verted **D**ense **I**ndex）是 VSAG 面向 **稀疏�
    DMQ 正排以降低重排内存。
 
 返回的距离为 `1 - inner_product`，使结果与稠密索引一样按升序排序。
+
+需要同时支持内存与磁盘 I/O 时，请选择 [SINDI_V2](sindi_v2.md)。
 
 ## 快速开始
 
@@ -139,6 +141,9 @@ auto result = index->KnnSearch(
 
 合并 ratio 与 threshold 限制后，每条非空倒排链至少扫描一个 posting。
 
+同一 window 内的单 term posting 先按实际存储值降序排列，值相同时按内部 doc id
+升序排列。ratio 和 threshold 同时生效时，实际扫描
+`floor(list_size · (1 - ratio))` 与 `floor(threshold / window_count)` 中的较小值。
 SINDI 会根据构建阶段的 `doc_prune_ratio` 与检索阶段的 `query_prune_ratio`
 自动选择堆插入策略。按当前 `0.1` 阈值，当两个比例都 `<= 0.1` 时，SINDI 使用
 基于距离数组的入堆路径；只要任一比例大于 `0.1`，就使用基于 term-list 的入堆路径。

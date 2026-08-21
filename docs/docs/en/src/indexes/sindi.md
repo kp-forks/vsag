@@ -5,7 +5,7 @@
 SINDI (**S**parse **IN**verted **D**ense **I**ndex) is VSAG's index for **sparse
 vectors** — the kind produced by BM25, SPLADE, and other learned-sparse encoders.
 Unlike the dense indexes (HGraph, IVF), SINDI operates directly on term/value
-pairs and is the only VSAG index that accepts `dtype: "sparse"`.
+pairs and is one of the VSAG indexes that accepts `dtype: "sparse"`.
 
 - Source: `src/algorithm/sindi/`
 - Example: [`examples/cpp/109_index_sindi.cpp`](https://github.com/antgroup/vsag/blob/main/examples/cpp/109_index_sindi.cpp)
@@ -27,6 +27,9 @@ pairs and is the only VSAG index that accepts `dtype: "sparse"`.
 
 Distance is returned as `1 - inner_product` so results sort ascending as in the
 dense indexes.
+
+For deployments that need both in-memory and disk-based I/O, use
+[SINDI_V2](sindi_v2.md).
 
 ## Quick start
 
@@ -150,6 +153,10 @@ Search-time parameters live under the `sindi` sub-object:
 After combining the ratio and threshold limits, SINDI scans at least one posting from every
 non-empty term list.
 
+Within each window, postings for a term are sorted by their stored value in descending
+order, then by internal document id in ascending order. If both term-prune limits are
+enabled, the scanned prefix is the smaller of
+`floor(list_size · (1 - ratio))` and `floor(threshold / window_count)`.
 SINDI chooses the heap-insertion strategy automatically from the build-time
 `doc_prune_ratio` and search-time `query_prune_ratio`. With the current `0.1`
 threshold, SINDI uses the distance-array insertion path when both ratios are
