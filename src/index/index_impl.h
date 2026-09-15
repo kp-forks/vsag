@@ -58,9 +58,15 @@ public:
         return DatasetImpl::MakeEmptyDataset(); \
     }
 
-#define CHECK_QUERY_RETURN_EMPTY_DATASET(query) \
-    if ((query)->GetNumElements() == 0) {       \
-        return make_empty_search_result();      \
+#define CHECK_QUERY_RETURN_EMPTY_DATASET(query)                 \
+    if ((query) != nullptr && (query)->GetNumElements() == 0) { \
+        return make_empty_search_result();                      \
+    }
+#define CHECK_EMPTY_INDEX_RETURN_EMPTY_DATASET_IF_SINGLE_QUERY(query, parameters) \
+    if (GetNumElements() == 0 && !this->ShouldSkipEmptyCheck(parameters) &&       \
+        ((query) == nullptr || (query)->GetNumElements() <= 1 ||                  \
+         this->inner_index_->GetIndexType() != IndexType::HGRAPH)) {              \
+        return make_empty_search_result();                                        \
     }
 #define CHECK_IMMUTABLE_INDEX(operation_str)                                       \
     if (this->inner_index_->immutable_.load(std::memory_order_acquire)) {          \
@@ -322,9 +328,7 @@ public:
             return tl::unexpected(threshold_validation.error());
         }
         CHECK_QUERY_RETURN_EMPTY_DATASET(query);
-        if (GetNumElements() == 0 && !this->ShouldSkipEmptyCheck(parameters)) {
-            return make_empty_search_result();
-        }
+        CHECK_EMPTY_INDEX_RETURN_EMPTY_DATASET_IF_SINGLE_QUERY(query, parameters);
         SAFE_CALL(return this->inner_index_->KnnSearch(query, k, parameters, invalid));
     }
 
@@ -338,9 +342,7 @@ public:
             return tl::unexpected(threshold_validation.error());
         }
         CHECK_QUERY_RETURN_EMPTY_DATASET(query);
-        if (GetNumElements() == 0 && !this->ShouldSkipEmptyCheck(parameters)) {
-            return make_empty_search_result();
-        }
+        CHECK_EMPTY_INDEX_RETURN_EMPTY_DATASET_IF_SINGLE_QUERY(query, parameters);
         SAFE_CALL(return this->inner_index_->KnnSearch(query, k, parameters, filter));
     }
 
@@ -354,9 +356,7 @@ public:
             return tl::unexpected(threshold_validation.error());
         }
         CHECK_QUERY_RETURN_EMPTY_DATASET(query);
-        if (GetNumElements() == 0 && !this->ShouldSkipEmptyCheck(parameters)) {
-            return make_empty_search_result();
-        }
+        CHECK_EMPTY_INDEX_RETURN_EMPTY_DATASET_IF_SINGLE_QUERY(query, parameters);
         SAFE_CALL(return this->inner_index_->KnnSearch(query, k, parameters, filter));
     }
 
@@ -367,9 +367,7 @@ public:
             return tl::unexpected(threshold_validation.error());
         }
         CHECK_QUERY_RETURN_EMPTY_DATASET(query);
-        if (GetNumElements() == 0 && !this->ShouldSkipEmptyCheck(search_param.parameters)) {
-            return make_empty_search_result();
-        }
+        CHECK_EMPTY_INDEX_RETURN_EMPTY_DATASET_IF_SINGLE_QUERY(query, search_param.parameters);
         if (search_param.is_iter_filter) {
             SAFE_CALL(return this->inner_index_->KnnSearch(query,
                                                            k,
@@ -396,9 +394,7 @@ public:
             return tl::unexpected(threshold_validation.error());
         }
         CHECK_QUERY_RETURN_EMPTY_DATASET(query);
-        if (GetNumElements() == 0 && !this->ShouldSkipEmptyCheck(parameters)) {
-            return make_empty_search_result();
-        }
+        CHECK_EMPTY_INDEX_RETURN_EMPTY_DATASET_IF_SINGLE_QUERY(query, parameters);
         SAFE_CALL(return this->inner_index_->KnnSearch(
             query, k, parameters, filter, nullptr, iter_ctx, is_last_filter));
     }
@@ -435,9 +431,7 @@ public:
                 const std::string& parameters,
                 int64_t limited_size = -1) const override {
         CHECK_QUERY_RETURN_EMPTY_DATASET(query);
-        if (GetNumElements() == 0 && !this->ShouldSkipEmptyCheck(parameters)) {
-            return make_empty_search_result();
-        }
+        CHECK_EMPTY_INDEX_RETURN_EMPTY_DATASET_IF_SINGLE_QUERY(query, parameters);
         SAFE_CALL(return this->inner_index_->RangeSearch(query, radius, parameters, limited_size));
     }
 
@@ -448,9 +442,7 @@ public:
                 BitsetPtr invalid,
                 int64_t limited_size = -1) const override {
         CHECK_QUERY_RETURN_EMPTY_DATASET(query);
-        if (GetNumElements() == 0 && !this->ShouldSkipEmptyCheck(parameters)) {
-            return make_empty_search_result();
-        }
+        CHECK_EMPTY_INDEX_RETURN_EMPTY_DATASET_IF_SINGLE_QUERY(query, parameters);
         SAFE_CALL(return this->inner_index_->RangeSearch(
             query, radius, parameters, invalid, limited_size));
     }
@@ -462,9 +454,7 @@ public:
                 const std::function<bool(int64_t)>& filter,
                 int64_t limited_size = -1) const override {
         CHECK_QUERY_RETURN_EMPTY_DATASET(query);
-        if (GetNumElements() == 0 && !this->ShouldSkipEmptyCheck(parameters)) {
-            return make_empty_search_result();
-        }
+        CHECK_EMPTY_INDEX_RETURN_EMPTY_DATASET_IF_SINGLE_QUERY(query, parameters);
         SAFE_CALL(return this->inner_index_->RangeSearch(
             query, radius, parameters, filter, limited_size));
     }
@@ -476,9 +466,7 @@ public:
                 const FilterPtr& filter,
                 int64_t limited_size = -1) const override {
         CHECK_QUERY_RETURN_EMPTY_DATASET(query);
-        if (GetNumElements() == 0 && !this->ShouldSkipEmptyCheck(parameters)) {
-            return make_empty_search_result();
-        }
+        CHECK_EMPTY_INDEX_RETURN_EMPTY_DATASET_IF_SINGLE_QUERY(query, parameters);
         SAFE_CALL(return this->inner_index_->RangeSearch(
             query, radius, parameters, filter, limited_size));
     }
@@ -570,9 +558,9 @@ public:
             }
         }
         SAFE_CALL(ValidateSearchThreshold(request.threshold_);
-                  if (GetNumElements() == 0 && !this->ShouldSkipEmptyCheck(request.params_str_)) {
-                      return make_empty_search_result();
-                  } return this->inner_index_->SearchWithRequest(request));
+                  CHECK_EMPTY_INDEX_RETURN_EMPTY_DATASET_IF_SINGLE_QUERY(request.query_,
+                                                                         request.params_str_);
+                  return this->inner_index_->SearchWithRequest(request));
     }
 
     tl::expected<void, Error>
