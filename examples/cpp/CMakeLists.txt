@@ -179,3 +179,6 @@ target_link_libraries(330_feature_search_statistics vsag)
 
 add_executable(114_index_simq 114_index_simq.cpp)
 target_link_libraries(114_index_simq vsag)
+
+add_executable(330_feature_timeout_search 330_feature_timeout_search.cpp)
+target_link_libraries(330_feature_timeout_search vsag)
